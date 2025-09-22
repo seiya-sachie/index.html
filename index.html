@@ -1,8 +1,441 @@
 <!DOCTYPE html>
 <html lang="ja">
+<head>
   <meta charset="utf-8" />
-  <title>Pagesテスト</title>
-  <h1>GitHub Pages: HTML OK</h1>
-  <p>この行が見えていれば、HTMLとして配信されています。</p>
-  <script>document.body.insertAdjacentHTML('beforeend','<p>JSも実行OK</p>');</script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QRスキャン簡易POS（価格帯カウンター）</title>
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- QR スキャン用ライブラリ -->
+  <script src="https://unpkg.com/html5-qrcode" defer></script>
+  <!-- QR 生成用ライブラリ -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+  <style>
+    @media print {
+      .no-print{ display:none !important; }
+      .print-grid{ grid-template-columns: repeat(4, 1fr); gap: 12mm; }
+      .qr-card { break-inside: avoid; page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-5xl mx-auto p-4 sm:p-6">
+    <header class="no-print flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+      <h1 class="text-2xl font-bold">QRスキャン簡易POS（価格帯カウンター）</h1>
+      <div class="text-sm text-gray-600">スキャン → 価格帯ごとに加算 → 合計表示 / 会計履歴保存</div>
+    </header>
+
+    <!-- 合計バー -->
+    <section class="no-print bg-white shadow rounded-2xl p-4 mb-4 flex flex-wrap items-center gap-4">
+      <div>
+        <div class="text-sm text-gray-500">小計</div>
+        <div id="subtotal" class="text-3xl font-semibold tracking-wider">¥0</div>
+      </div>
+      <div class="hidden sm:block w-px h-12 bg-gray-200"></div>
+      <div>
+        <div class="text-sm text-gray-500">点数</div>
+        <div id="itemCount" class="text-3xl font-semibold">0</div>
+      </div>
+      <div class="ml-auto flex gap-2">
+        <button id="btnStartScan" class="px-4 py-2 rounded-xl bg-black text-white hover:opacity-90">スキャン開始</button>
+        <button id="btnStopScan" class="px-4 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">停止</button>
+        <button id="btnCheckout" class="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:opacity-90">会計</button>
+        <button id="btnClear" class="px-4 py-2 rounded-xl bg-rose-600 text-white hover:opacity-90">新規会計</button>
+      </div>
+    </section>
+
+    <!-- 価格帯ボタン & スキャンビュー -->
+    <div class="grid md:grid-cols-2 gap-4 no-print">
+      <section class="bg-white shadow rounded-2xl p-4">
+        <h2 class="font-semibold mb-3">手動追加（タップで+1）</h2>
+        <div id="priceButtons" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+        <div class="mt-3 flex gap-2">
+          <button id="btnUndo" class="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">直前を取り消す</button>
+          <span id="lastAction" class="text-sm text-gray-500"></span>
+        </div>
+        <div class="mt-4">
+          <h3 class="font-medium mb-2">明細</h3>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-gray-500">
+                <th class="py-1">価格</th>
+                <th class="py-1">個数</th>
+                <th class="py-1">金額</th>
+              </tr>
+            </thead>
+            <tbody id="lines"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="bg-white shadow rounded-2xl p-4">
+        <h2 class="font-semibold mb-3">QRスキャン</h2>
+        <div id="qrRegion" class="aspect-video rounded-xl bg-gray-100 flex items-center justify-center text-gray-400">停止中</div>
+        <p class="mt-2 text-sm text-gray-600">印刷したQRをカメラで読み取るか、この画面の「スキャン開始」を押して連続読み取り。</p>
+        <details class="mt-3">
+          <summary class="cursor-pointer select-none font-medium">読み取りの仕様</summary>
+          <ul class="list-disc pl-5 text-sm text-gray-600 mt-2">
+            <li>QRのテキストが <code>P:1000</code> / <code>1000</code> / <code>ADD=1000</code> など数字を含む場合、その金額が登録されます。</li>
+            <li>URLのクエリ（例: <code>?add=1000</code>）やハッシュ（例: <code>#add=1000</code>）も認識します。</li>
+            <li>認識した金額が「価格帯設定」に存在しない場合は無視されます。</li>
+          </ul>
+        </details>
+      </section>
+    </div>
+
+    <!-- 設定・QR生成 -->
+    <section class="bg-white shadow rounded-2xl p-4 mt-4">
+      <h2 class="font-semibold mb-3 no-print">設定 & QRコード生成</h2>
+      <div class="no-print grid md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-600 mb-1">価格帯（カンマ区切り）</label>
+          <input id="tierInput" class="w-full px-3 py-2 rounded-xl border border-gray-300" placeholder="例: 500,1000,1500,2000" />
+          <div class="flex gap-2 mt-2">
+            <button id="btnSaveTiers" class="px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">保存</button>
+            <button id="btnResetTiers" class="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">初期化</button>
+          </div>
+          <div class="mt-4">
+            <label class="block text-sm text-gray-600 mb-1">（任意）このページのURL
+              <span class="text-gray-500">※URL版QRを作るときに使います</span>
+            </label>
+            <input id="selfUrl" class="w-full px-3 py-2 rounded-xl border border-gray-300" placeholder="https://example.com/pos.html" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-600 mb-2">QRコード出力</label>
+          <div class="flex items-center gap-4 mb-2">
+            <label class="inline-flex items-center gap-2">
+              <input type="checkbox" id="qrTextMode" checked />
+              <span>テキスト版（P:金額）</span>
+            </label>
+            <label class="inline-flex items-center gap-2">
+              <input type="checkbox" id="qrUrlMode" />
+              <span>URL版（?add=金額）</span>
+            </label>
+          </div>
+          <button id="btnGenQR" class="px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">QRを生成</button>
+          <button id="btnPrintQR" class="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">印刷</button>
+        </div>
+      </div>
+
+      <div id="qrGrid" class="print-grid grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-4"></div>
+    </section>
+
+    <!-- 履歴 -->
+    <section class="bg-white shadow rounded-2xl p-4 mt-4 no-print">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-semibold">会計履歴</h2>
+        <div class="flex gap-2">
+          <button id="btnExportCsv" class="px-3 py-2 rounded-xl bg-gray-200 hover:bg-gray-300">CSV保存</button>
+          <button id="btnClearHistory" class="px-3 py-2 rounded-xl bg-rose-600 text-white hover:opacity-90">履歴削除</button>
+        </div>
+      </div>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-gray-500">
+            <th class="py-1">日時</th>
+            <th class="py-1">合計</th>
+            <th class="py-1">内訳</th>
+            <th class="py-1">支払</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <script>
+    // --- 状態管理 ---
+    const $ = (s, root=document) => root.querySelector(s);
+    const $$ = (s, root=document) => Array.from(root.querySelectorAll(s));
+
+    const STATE = {
+      tiers: [500, 1000, 1500, 2000, 3000],
+      cart: {}, // {price: qty}
+      last: null,
+      scanning: false,
+      history: [],
+    };
+
+    // --- 永続化 ---
+    const LS_KEYS = {
+      TIERS: 'qrpos_tiers',
+      HISTORY: 'qrpos_history',
+    };
+
+    function loadState(){
+      try{
+        const t = JSON.parse(localStorage.getItem(LS_KEYS.TIERS));
+        if(Array.isArray(t) && t.length){ STATE.tiers = t.map(n=>Number(n)).filter(n=>Number.isFinite(n)); }
+      }catch(e){}
+      try{
+        const h = JSON.parse(localStorage.getItem(LS_KEYS.HISTORY));
+        if(Array.isArray(h)){ STATE.history = h; }
+      }catch(e){}
+    }
+    function saveTiers(){ localStorage.setItem(LS_KEYS.TIERS, JSON.stringify(STATE.tiers)); }
+    function saveHistory(){ localStorage.setItem(LS_KEYS.HISTORY, JSON.stringify(STATE.history)); }
+
+    // --- 表示更新 ---
+    function fmtJPY(n){ return '¥' + (n||0).toLocaleString('ja-JP'); }
+    function subtotal(){ return Object.entries(STATE.cart).reduce((s,[p,q])=>s + Number(p)*q, 0); }
+    function countItems(){ return Object.values(STATE.cart).reduce((s,q)=>s+q, 0); }
+
+    function renderSummary(){
+      $('#subtotal').textContent = fmtJPY(subtotal());
+      $('#itemCount').textContent = countItems();
+    }
+
+    function renderLines(){
+      const tbody = $('#lines');
+      tbody.innerHTML = '';
+      const tiers = [...STATE.tiers].sort((a,b)=>a-b);
+      for(const p of tiers){
+        const q = STATE.cart[p]||0;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="py-1">${fmtJPY(p)}</td>
+          <td class="py-1">${q}</td>
+          <td class="py-1">${fmtJPY(p*q)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderButtons(){
+      const wrap = $('#priceButtons');
+      wrap.innerHTML = '';
+      const tiers = [...STATE.tiers].sort((a,b)=>a-b);
+      for(const p of tiers){
+        const btn = document.createElement('button');
+        btn.className = 'px-4 py-3 rounded-xl bg-white border shadow hover:shadow-md text-lg';
+        btn.textContent = fmtJPY(p) + ' +1';
+        btn.addEventListener('click', ()=> addItem(p));
+        wrap.appendChild(btn);
+      }
+    }
+
+    function renderHistory(){
+      const tbody = $('#historyBody');
+      tbody.innerHTML = '';
+      for(const row of STATE.history.slice().reverse()){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="py-1 align-top text-gray-600">${row.time}</td>
+          <td class="py-1 align-top font-medium">${fmtJPY(row.total)}</td>
+          <td class="py-1 align-top text-gray-700">${row.breakdown}</td>
+          <td class="py-1 align-top">${row.method||''}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // --- カート操作 ---
+    function addItem(price){
+      price = Number(price);
+      if(!STATE.tiers.includes(price)) return;
+      STATE.cart[price] = (STATE.cart[price]||0) + 1;
+      STATE.last = { type:'add', price };
+      beep(); vibrate(); flashLast(`+ ${fmtJPY(price)}`);
+      renderSummary(); renderLines();
+    }
+    function undo(){
+      const last = STATE.last; if(!last) return;
+      if(last.type==='add'){
+        const p = last.price; if(STATE.cart[p]){ STATE.cart[p]--; if(STATE.cart[p]<=0) delete STATE.cart[p]; }
+        STATE.last = null;
+        renderSummary(); renderLines();
+        flashLast('取り消しました');
+      }
+    }
+    function clearCart(){ STATE.cart = {}; STATE.last=null; renderSummary(); renderLines(); $('#lastAction').textContent=''; }
+
+    function flashLast(text){ $('#lastAction').textContent = text; setTimeout(()=>$('#lastAction').textContent='', 2000); }
+
+    // --- オーディオ & バイブ ---
+    function beep(){
+      try{
+        const ctx = new (window.AudioContext||window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type='triangle'; o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+        o.start();
+        g.gain.setValueAtTime(0.2, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.12);
+        o.stop(ctx.currentTime+0.12);
+      }catch(e){}
+    }
+    function vibrate(){ try{ navigator.vibrate && navigator.vibrate(30); }catch(e){} }
+
+    // --- スキャナ ---
+    let html5QrcodeInst = null;
+    async function startScan(){
+      if(STATE.scanning) return;
+      const region = $('#qrRegion');
+      region.textContent='';
+      region.classList.remove('text-gray-400');
+      const w = region.clientWidth; const h = region.clientHeight;
+      html5QrcodeInst = new Html5Qrcode('qrRegion');
+      const cfg = { fps: 15, qrbox: { width: Math.min(320, w-20), height: Math.min(320, h-20) } };
+      const onScan = (decodedText, decodedResult) => { handleScanPayload(decodedText); };
+      const onFail = (e)=>{};
+      try{
+        await html5QrcodeInst.start({ facingMode: 'environment' }, cfg, onScan, onFail);
+        STATE.scanning = true;
+      }catch(e){
+        region.textContent = 'カメラ起動に失敗しました: ' + e;
+      }
+    }
+    async function stopScan(){
+      if(!STATE.scanning || !html5QrcodeInst) return;
+      try{ await html5QrcodeInst.stop(); await html5QrcodeInst.clear(); }catch(e){}
+      STATE.scanning = false;
+      const region = $('#qrRegion');
+      region.textContent='停止中';
+      region.classList.add('text-gray-400');
+    }
+
+    function extractPrice(str){
+      if(!str) return null;
+      try{
+        // URLの ?add= / #add= を優先
+        const u = new URL(str);
+        const qAdd = Number(u.searchParams.get('add'));
+        if(Number.isFinite(qAdd)) return qAdd;
+        const hash = new URLSearchParams(u.hash.replace(/^#/, ''));
+        const hAdd = Number(hash.get('add'));
+        if(Number.isFinite(hAdd)) return hAdd;
+      }catch(e){ /* 文字列のまま処理 */ }
+
+      // P:1000 / ADD=1000 / 単なる 1000 などから最初の数値を拾う
+      const m = String(str).match(/([0-9]{2,6})/);
+      if(m){ return Number(m[1]); }
+      return null;
+    }
+
+    function handleScanPayload(text){
+      const price = extractPrice(text);
+      if(price && STATE.tiers.includes(price)){
+        addItem(price);
+      }else{
+        flashLast('未対応のQR: ' + text);
+      }
+    }
+
+    // --- 会計処理 ---
+    function checkout(){
+      const total = subtotal();
+      if(total<=0){ alert('カートが空です'); return; }
+      const method = prompt(`合計 ${fmtJPY(total)}\nお支払い方法を入力してください（例: 現金 / QR）`, '現金');
+      const breakdown = [...STATE.tiers]
+        .sort((a,b)=>a-b)
+        .map(p=>`${fmtJPY(p)}×${STATE.cart[p]||0}`)
+        .filter(s=>!/×0$/.test(s)).join(', ');
+      const row = { time: new Date().toLocaleString('ja-JP'), total, breakdown, method };
+      STATE.history.push(row); saveHistory(); renderHistory();
+      clearCart();
+      alert('会計を記録しました');
+    }
+
+    // --- CSV出力 ---
+    function exportCsv(){
+      const headers = ['日時','合計','内訳','支払'];
+      const rows = STATE.history.map(r=>[r.time, r.total, r.breakdown, r.method]);
+      const csv = [headers, ...rows].map(r=> r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob(['\ufeff'+csv], {type:'text/csv'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `sales_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    // --- 設定 / QR生成 ---
+    function loadSettingsToUI(){
+      $('#tierInput').value = STATE.tiers.join(',');
+    }
+
+    function saveTiersFromUI(){
+      const arr = $('#tierInput').value.split(',').map(s=>Number(s.trim())).filter(n=>Number.isFinite(n));
+      if(!arr.length){ alert('価格帯が空です'); return; }
+      STATE.tiers = Array.from(new Set(arr)).sort((a,b)=>a-b);
+      saveTiers();
+      renderButtons(); renderLines(); renderSummary();
+      alert('価格帯を保存しました');
+    }
+
+    function resetTiers(){
+      STATE.tiers = [500,1000,1500,2000,3000];
+      saveTiers(); loadSettingsToUI(); renderButtons(); renderLines(); renderSummary();
+    }
+
+    function genQR(){
+      const grid = $('#qrGrid');
+      grid.innerHTML='';
+      const useText = $('#qrTextMode').checked;
+      const useUrl = $('#qrUrlMode').checked;
+      const selfUrl = $('#selfUrl').value.trim();
+      if(!useText && !useUrl){ alert('少なくとも1種類のQRを選択してください'); return; }
+      for(const p of STATE.tiers){
+        const card = document.createElement('div');
+        card.className = 'qr-card bg-white border rounded-2xl p-3 flex flex-col items-center justify-center text-center';
+        const title = document.createElement('div');
+        title.className='text-lg font-semibold mb-1';
+        title.textContent = fmtJPY(p);
+        card.appendChild(title);
+        const box = document.createElement('div');
+        box.className='grid grid-cols-1 gap-2';
+        if(useText){
+          const div = document.createElement('div'); div.className='mx-auto'; div.style.width='140px'; div.style.height='140px';
+          const payload = `P:${p}`; new QRCode(div, {text: payload, width:140, height:140, correctLevel: QRCode.CorrectLevel.M});
+          const cap = document.createElement('div'); cap.className='text-xs text-gray-500'; cap.textContent = payload;
+          const wrap = document.createElement('div'); wrap.appendChild(div); wrap.appendChild(cap); box.appendChild(wrap);
+        }
+        if(useUrl && selfUrl){
+          const div = document.createElement('div'); div.className='mx-auto'; div.style.width='140px'; div.style.height='140px';
+          const url = new URL(selfUrl);
+          url.searchParams.set('add', String(p));
+          new QRCode(div, {text: url.toString(), width:140, height:140, correctLevel: QRCode.CorrectLevel.M});
+          const cap = document.createElement('div'); cap.className='text-xs text-gray-500 break-all'; cap.textContent = url.toString();
+          const wrap = document.createElement('div'); wrap.appendChild(div); wrap.appendChild(cap); box.appendChild(wrap);
+        }
+        card.appendChild(box);
+        grid.appendChild(card);
+      }
+    }
+
+    function printQR(){ window.print(); }
+
+    // --- イベント ---
+    window.addEventListener('DOMContentLoaded', ()=>{
+      loadState();
+      loadSettingsToUI();
+      renderButtons(); renderLines(); renderSummary(); renderHistory();
+
+      $('#btnStartScan').addEventListener('click', startScan);
+      $('#btnStopScan').addEventListener('click', stopScan);
+      $('#btnCheckout').addEventListener('click', checkout);
+      $('#btnClear').addEventListener('click', clearCart);
+      $('#btnUndo').addEventListener('click', undo);
+
+      $('#btnSaveTiers').addEventListener('click', saveTiersFromUI);
+      $('#btnResetTiers').addEventListener('click', resetTiers);
+      $('#btnGenQR').addEventListener('click', genQR);
+      $('#btnPrintQR').addEventListener('click', printQR);
+
+      $('#btnExportCsv').addEventListener('click', exportCsv);
+      $('#btnClearHistory').addEventListener('click', ()=>{ if(confirm('履歴をすべて削除しますか？')){ STATE.history=[]; saveHistory(); renderHistory(); }});
+
+      // URLパラメータ/ハッシュによる加算（カメラアプリでURLを開いた場合のワンタップ加算）
+      const params = new URLSearchParams(location.search);
+      const addQ = Number(params.get('add'));
+      if(Number.isFinite(addQ)) addItem(addQ);
+      const hash = new URLSearchParams(location.hash.replace(/^#/, ''));
+      const addH = Number(hash.get('add'));
+      if(Number.isFinite(addH)) addItem(addH);
+    });
+
+    window.addEventListener('beforeunload', ()=>{ stopScan(); });
+  </script>
+</body>
 </html>
